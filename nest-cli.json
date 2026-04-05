@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json.schemastore.org/nest-cli",
+  "collection": "@nestjs/schematics",
+  "sourceRoot": "apps/payment-api/src",
+  "monorepo": true,
+  "root": "apps/payment-api",
+  "compilerOptions": {
+    "webpack": false,
+    "tsConfigPath": "apps/payment-api/tsconfig.app.json"
+  },
+  "projects": {
+    "payment-api": {
+      "type": "application",
+      "root": "apps/payment-api",
+      "entryFile": "main",
+      "sourceRoot": "apps/payment-api/src",
+      "compilerOptions": {
+        "tsConfigPath": "apps/payment-api/tsconfig.app.json"
+      }
+    },
+    "outbox-relay": {
+      "type": "application",
+      "root": "apps/outbox-relay",
+      "entryFile": "main",
+      "sourceRoot": "apps/outbox-relay/src",
+      "compilerOptions": {
+        "tsConfigPath": "apps/outbox-relay/tsconfig.app.json"
+      }
+    },
+    "fraud-consumer": {
+      "type": "application",
+      "root": "apps/fraud-consumer",
+      "entryFile": "main",
+      "sourceRoot": "apps/fraud-consumer/src",
+      "compilerOptions": {
+        "tsConfigPath": "apps/fraud-consumer/tsconfig.app.json"
+      }
+    },
+    "ledger-consumer": {
+      "type": "application",
+      "root": "apps/ledger-consumer",
+      "entryFile": "main",
+      "sourceRoot": "apps/ledger-consumer/src",
+      "compilerOptions": {
+        "tsConfigPath": "apps/ledger-consumer/tsconfig.app.json"
+      }
+    },
+    "shared": {
+      "type": "library",
+      "root": "libs/shared",
+      "entryFile": "index",
+      "sourceRoot": "libs/shared/src",
+      "compilerOptions": {
+        "tsConfigPath": "libs/shared/tsconfig.lib.json"
+      }
+    }
+  }
+}
