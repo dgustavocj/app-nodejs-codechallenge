@@ -1,82 +1,165 @@
-# Yape Code Challenge :rocket:
+# Payment Settlement Pipeline
 
-Our code challenge will let you marvel us with your Jedi coding skills :smile:. 
+Pipeline de liquidacion de pagos con arquitectura event-driven. Monorepo NestJS + Apache Kafka + PostgreSQL.
 
-Don't forget that the proper way to submit your work is to fork the repo and create a PR :wink: ... have fun !!
+Solucion al Yape Code Challenge.
 
-- [Problem](#problem)
-- [Tech Stack](#tech_stack)
-- [Send us your challenge](#send_us_your_challenge)
+---
 
-# Problem
-
-Every time a financial transaction is created it must be validated by our anti-fraud microservice and then the same service sends a message back to update the transaction status.
-For now, we have only three transaction statuses:
-
-<ol>
-  <li>pending</li>
-  <li>approved</li>
-  <li>rejected</li>  
-</ol>
-
-Every transaction with a value greater than 1000 should be rejected.
+## Arquitectura
 
 ```mermaid
-  flowchart LR
-    Transaction -- Save Transaction with pending Status --> transactionDatabase[(Database)]
-    Transaction --Send transaction Created event--> Anti-Fraud
-    Anti-Fraud -- Send transaction Status Approved event--> Transaction
-    Anti-Fraud -- Send transaction Status Rejected event--> Transaction
-    Transaction -- Update transaction Status event--> transactionDatabase[(Database)]
+flowchart LR
+    Client([HTTP Client])
+
+    subgraph payment-api
+        API[REST Controller]
+        Saga[Status Saga]
+    end
+
+    subgraph outbox-relay
+        Relay[Outbox Relay]
+    end
+
+    subgraph fraud-consumer
+        Fraud[Fraud Service]
+    end
+
+    subgraph ledger-consumer
+        Ledger[Ledger Service]
+    end
+
+    DB[(PostgreSQL)]
+    K{{Apache Kafka}}
+
+    Client -- "POST /transactions" --> API
+    Client -- "GET /transactions/:id" --> API
+
+    API -- "INSERT payment + outbox_event (misma TX)" --> DB
+    Relay -- "poll unpublished events" --> DB
+    Relay -- "payment.created.v1" --> K
+
+    K -- "payment.created.v1" --> Fraud
+    K -- "payment.created.v1" --> Ledger
+
+    Fraud -- "payment.fraud-result.v1" --> K
+    Ledger -- "payment.ledger-result.v1" --> K
+
+    K -- "fraud/ledger results" --> Saga
+
+    Saga -- "UPDATE payment status" --> DB
 ```
 
-# Tech Stack
+**Flujo resumido:** el API crea el pago y un evento en la misma transaccion DB (transactional outbox). El relay publica a Kafka. Fraud y Ledger procesan en paralelo y publican sus resultados. El Status Saga espera ambos para transicionar: `PENDING -> SETTLED | REJECTED | FAILED`.
 
-<ol>
-  <li>Node. You can use any framework you want (i.e. Nestjs with an ORM like TypeOrm or Prisma) </li>
-  <li>Any database</li>
-  <li>Kafka</li>    
-</ol>
+Si fraud rechaza (monto > 1000), se marca `REJECTED` inmediato sin esperar ledger.
 
-We do provide a `Dockerfile` to help you get started with a dev environment.
+---
 
-You must have two resources:
+## Estructura
 
-1. Resource to create a transaction that must containt:
-
-```json
-{
-  "accountExternalIdDebit": "Guid",
-  "accountExternalIdCredit": "Guid",
-  "tranferTypeId": 1,
-  "value": 120
-}
+```
+apps/
+  payment-api/         # API REST + Status Saga consumer
+  outbox-relay/        # Poller que publica outbox -> Kafka
+  fraud-consumer/      # Validacion anti-fraude
+  ledger-consumer/     # Registro contable
+libs/
+  shared/              # Entidades, DTOs, modulos compartidos
 ```
 
-2. Resource to retrieve a transaction
+---
 
+## Quick Start
+
+### Docker Compose
+
+```bash
+docker-compose up --build
+```
+
+Levanta PostgreSQL, Zookeeper, Kafka y las 4 apps. API en `http://localhost:3000`.
+
+### Local
+
+```bash
+docker-compose up postgres zookeeper kafka -d
+npm install
+cp .env.example .env
+npm run start:all:dev
+```
+
+---
+
+## Endpoints
+
+### `POST /transactions`
+
+```bash
+curl -X POST http://localhost:3000/transactions \
+  -H "Content-Type: application/json" \
+  -H "x-correlation-id: 550e8400-e29b-41d4-a716-446655440000" \
+  -d '{
+    "accountExternalIdDebit": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "accountExternalIdCredit": "f9e8d7c6-b5a4-3210-fedc-ba0987654321",
+    "transferTypeId": 1,
+    "value": 120
+  }'
+```
+
+Response `201`:
 ```json
 {
-  "transactionExternalId": "Guid",
-  "transactionType": {
-    "name": ""
-  },
-  "transactionStatus": {
-    "name": ""
-  },
+  "transactionExternalId": "uuid",
+  "transactionType": { "name": "credit" },
+  "transactionStatus": { "name": "PENDING" },
   "value": 120,
-  "createdAt": "Date"
+  "createdAt": "2026-04-04T15:30:00.000Z"
 }
 ```
 
-## Optional
+### `GET /transactions/:id`
 
-You can use any approach to store transaction data but you should consider that we may deal with high volume scenarios where we have a huge amount of writes and reads for the same data at the same time. How would you tackle this requirement?
+Devuelve el estado actual del pago. Si esta en `PENDING` la consistencia es eventual (aun procesandose).
 
-You can use Graphql;
+### `GET /health`
 
-# Send us your challenge
+```json
+{ "status": "ok", "service": "payment-api" }
+```
 
-When you finish your challenge, after forking a repository, you **must** open a pull request to our repository. There are no limitations to the implementation, you can follow the programming paradigm, modularization, and style that you feel is the most appropriate solution.
+---
 
-If you have any questions, please let us know.
+## Decisiones clave
+
+| Aspecto | Decision |
+|---------|----------|
+| Transactional Outbox | Payment + evento en misma TX de DB. Evita dual-write con Kafka |
+| Procesamiento paralelo | Fraud y Ledger son independientes, no se conocen entre si |
+| Status Saga | Agrega confirmaciones antes de transicionar. Rechazo de fraude corta inmediato |
+| Idempotencia | Tabla `consumer_idempotency` con PK compuesta (eventId + consumerGroup) |
+| Dead Letter | Tras 3 reintentos fallidos se publica a `payment.failed.v1` y se persiste para revision manual |
+
+## Limitaciones conocidas
+
+- El retry count del DLT service esta en memoria (se pierde si el proceso reinicia). Habria que persistirlo.
+- Ledger no implementa partida doble real, solo simula el registro.
+- No hay tests e2e automatizados todavia — solo unitarios.
+- `synchronize: true` en TypeORM; para prod habria que usar migrations.
+
+---
+
+## Tests
+
+```bash
+npm test          # unitarios
+npm run test:cov  # con cobertura
+```
+
+## Variables de entorno
+
+Ver `.env.example` para la lista completa.
+
+---
+
+Proyecto privado - Yape Code Challenge.
